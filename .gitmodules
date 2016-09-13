@@ -1,0 +1,9 @@
+[submodule "libraries/Time"]
+	path = libraries/Time
+	url = https://github.com/PaulStoffregen/Time.git
+[submodule "libraries/DS1307RTC"]
+	path = libraries/DS1307RTC
+	url = https://github.com/PaulStoffregen/DS1307RTC.git
+[submodule "libraries/Arduino-LiquidCrystal-I2C-library"]
+	path = libraries/Arduino-LiquidCrystal-I2C-library
+	url = https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library
