@@ -5,10 +5,11 @@
 LiquidCrystal_I2C lcd(0x27,16,2);	// Инициализация дисплея (адрес, количество символов, количество строк)
 
 struct sys_conf {
-	byte	password[4],
-			param1,
-			param2,
-			param3;
+	byte	password[4],		// Пароль, для отключения сигнала
+			red_speed,			// Включать ли красный свет при уменьшении скорости
+			time_to_slpeep,		// Время, после которого компьютер уснёт (минуты)
+			auto_led,			// Включать подсветку экрана по датчику света или нет
+			auto_headlights;	// Включать фару по датчику света или нет
 
 	float	distance,
 			max_speed;
@@ -32,13 +33,16 @@ struct sys_conf {
 
 bool			alarm_state = false;	// Для сигнализации
 
+bool			test = true;
+
 unsigned long	lastturn;	// Время последнего обращения
 
 float			speed_now,	// Скорость
 				distance;	// Расстояние
 
-byte			system_state = 0,
-				password[4];		// Пароль для отключения сигнализации
+byte			system_state = 0;
+
+sys_conf		btc_config;	// Конфигурация системы
 
 void setup() {
 	#ifdef DEBUG
@@ -58,21 +62,65 @@ void setup() {
 
 	/*Прерывание на 3-ем цифровом канале для подсчёта скорости*/
 	attachInterrupt(1, speed, CHANGE);
+
+	#ifdef FIRST_ON
+	sys_conf load_to_eeprom;
+
+	load_to_eeprom.password[0]		= 1;
+	load_to_eeprom.password[1]		= 2;
+	load_to_eeprom.password[2]		= 3;
+	load_to_eeprom.password[3]		= 4;
+	load_to_eeprom.red_speed		= true;
+	load_to_eeprom.time_to_slpeep	= 5;
+	load_to_eeprom.auto_led			= true;
+	load_to_eeprom.auto_headlights	= true;
+	load_to_eeprom.distance			= 0.0;
+	load_to_eeprom.max_speed		= 0.0;
+
+	WriteSysConfEEPROM(load_to_eeprom, 0);
+	lcd.print("All OK!");
+	#endif
 }
 
-void WriteSysConfEEPROM(sys_conf str) {
+void WriteSysConfEEPROM(sys_conf str, int base) {	// Запись и чтение выполнены великолепным программистом Виктором Охотниковым
 	char	*c;
-	int		structSize	= sizeof(sys_conf);
+	int		structSize = sizeof(sys_conf);
 
-	*c = &str;
+	c	= (char *) &str;
 
-	for(int	i	= 0; i < structSize; i++) {
+	for(int i = 0; i < structSize; i++) {
 		EEPROM.write(i+base, *c);
 		c++;
 	}
 }
 
+void ReadSysConfEEPROM(sys_conf *str, int base) {
+	char	*c;
+	int		structSize = sizeof(sys_conf);
+
+	c	= (char *) str;
+
+	for(int i = 0; i < structSize; i++) {
+		*c = EEPROM.read(i+base);
+		c++;
+	}
+}
+
 void loop() {
+ if (test) {
+ 	ReadSysConfEEPROM(btc_config, 0);
+ 	lcd.setCursor(0, 0);
+ 	lcd.print(btc_config.password[0]);
+ 	lcd.setCursor(1, 0);
+ 	lcd.print(btc_config.password[1]);
+ 	lcd.setCursor(2, 0);
+ 	lcd.print(btc_config.password[2]);
+ 	lcd.setCursor(3, 0);
+ 	lcd.print(btc_config.password[3]);
+ 	lcd.setCursor(0, 1);
+ 	lcd.print(btc_config.time_to_slpeep);
+ 	test = false;
+ }
 }
 
 void alarm() {	// Сигнализация
@@ -108,11 +156,11 @@ void input_password() {
 		while ((digitalRead(BUTTON_OK) == BUTTON_PRESS) || (digitalRead(BUTTON_LEFT) == BUTTON_PRESS) || digitalRead(BUTTON_RIGHT) == BUTTON_PRESS);	// Ожидание нажатия любой кнопки
 
 		if (digitalRead(BUTTON_OK) == BUTTON_PRESS) {
-			password[i]	= BUTTON_OK;
+			btc_config.password[i]	= BUTTON_OK;
 		} else if (digitalRead(BUTTON_LEFT) == BUTTON_PRESS) {
-			password[i]	= BUTTON_LEFT;
+			btc_config.password[i]	= BUTTON_LEFT;
 		} else if (digitalRead(BUTTON_RIGHT) == BUTTON_PRESS) {
-			password[i]	= BUTTON_RIGHT;
+			btc_config.password[i]	= BUTTON_RIGHT;
 		}
 
 		lcd.setCursor(9 + i, 0);
