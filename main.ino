@@ -22,18 +22,17 @@ struct sys_conf {
 #define WHEEL_LENGTH	2.050	// Длина окружности колеса в метрах
 #define BIP_DELAY		4		// Сколько итераций пищать (* 500 / 10000)
 
+#define BUTTON_OK		256
+#define BUTTON_LEFT		680
+#define BUTTON_RIGHT	341
+
 /*Цифровые выводы*/
 #define BIP				4
-#define BUTTON_OK		4
-#define BUTTON_LEFT		4
-#define BUTTON_RIGHT	4
 
 /*Аналоговые выводы*/
 
 
 bool			alarm_state = false;	// Для сигнализации
-
-bool			test = true;
 
 unsigned long	lastturn;	// Время последнего обращения
 
@@ -107,20 +106,6 @@ void ReadSysConfEEPROM(sys_conf *str, int base) {
 }
 
 void loop() {
- if (test) {
- 	ReadSysConfEEPROM(btc_config, 0);
- 	lcd.setCursor(0, 0);
- 	lcd.print(btc_config.password[0]);
- 	lcd.setCursor(1, 0);
- 	lcd.print(btc_config.password[1]);
- 	lcd.setCursor(2, 0);
- 	lcd.print(btc_config.password[2]);
- 	lcd.setCursor(3, 0);
- 	lcd.print(btc_config.password[3]);
- 	lcd.setCursor(0, 1);
- 	lcd.print(btc_config.time_to_slpeep);
- 	test = false;
- }
 }
 
 void alarm() {	// Сигнализация
@@ -145,6 +130,8 @@ void speed() {	// Подсчёт скорости
 		distance	= distance + WHEEL_LENGTH / 1000;								// Прибавляем длину колеса к дистанции при каждом обороте
 	}
 }
+
+
 
 void input_password() {
 	lcd.clear();			// Очистка экрана
