@@ -2,6 +2,30 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
+#define VERSION "0.2(a)"
+
+static byte	bat_icon[8]	= {
+	B01110,
+	B11111,
+	B11111,
+	B11111,
+	B11111,
+	B11111,
+	B11111,
+	B11111
+};
+
+static byte	bat_in_icon[8]	= {
+	B01110,
+	B11111,
+	B10101,
+	B10101,
+	B10101,
+	B10001,
+	B10101,
+	B11111
+};
+
 LiquidCrystal_I2C lcd(0x27,16,2);	// Инициализация дисплея (адрес, количество символов, количество строк)
 
 struct sys_conf {
@@ -22,26 +46,178 @@ struct sys_conf {
 #define WHEEL_LENGTH	2.050	// Длина окружности колеса в метрах
 #define BIP_DELAY		4		// Сколько итераций пищать (* 500 / 10000)
 
+/*Аналоговые выводы*/
+#define ACTION_BUTTON	2
 #define BUTTON_OK		256
 #define BUTTON_LEFT		680
 #define BUTTON_RIGHT	341
 
 /*Цифровые выводы*/
 #define BIP				4
+#define BUTTON_CANCEL	341
+#define BUTTON_SIGNAL	341
 
-/*Аналоговые выводы*/
-
-
-bool			alarm_state = false;	// Для сигнализации
+bool			alarm_state		= false,	// Для сигнализации
+				bat_external	= true;
 
 unsigned long	lastturn;	// Время последнего обращения
 
-float			speed_now,	// Скорость
-				distance;	// Расстояние
+float			speed_now		= 0.0,	// Скорость
+				distance		= 0.0;	// Расстояние
 
-byte			system_state = 0;
+byte			bat_percent		= 100,
+				system_state	= 0;
+
+#define LOAD_STATE		0
+#define SPEED_STATE		1
+#define MENU_STATE		2
+#define SETTINGS_STATE	3
 
 sys_conf		btc_config;	// Конфигурация системы
+
+unsigned int key_pressed() {
+	int key;
+
+	while (true) {
+
+		while ((key = analogRead(ACTION_BUTTON)) > 1000);
+
+		#ifdef DEBUG
+		Serial.println(key);
+		#endif
+
+		if ((key >= BUTTON_OK - 10) && (key <= BUTTON_OK + 10)) {
+			key	= BUTTON_OK;
+			break;
+		} else if ((key >= BUTTON_LEFT - 10) && (key <= BUTTON_LEFT + 10)) {
+			key	= BUTTON_LEFT;
+			break;
+		} else if ((key >= BUTTON_RIGHT - 10) && (key <= BUTTON_RIGHT + 10)) {
+			key	= BUTTON_RIGHT;
+			break;
+		}
+	}
+
+	while (analogRead(ACTION_BUTTON) < 1000);
+
+	delay(10);
+
+	return key;
+}
+
+void road_mode() {	// Режим спидометра
+	float	speed_old		= 0.0;
+
+	lcd.clear();
+	lcd.print("km/h: ");
+
+	lcd.setCursor(0, 1);
+	lcd.print("km:");
+
+	lcd.setCursor(15, 1);
+	lcd.write(0);
+
+	while (true) {
+		if (speed_old > speed_now) {
+			lcd.setCursor(5, 0);
+			lcd.print("    ");
+		}
+		lcd.setCursor(5, 0);
+		lcd.print(speed_now);
+		speed_old	= speed_now;
+
+		lcd.setCursor(11, 0);
+		lcd.print("00:00");
+
+		lcd.setCursor(3, 1);
+		lcd.print(distance);
+
+		lcd.setCursor(12, 1);
+		if (bat_percent == 100) {
+			lcd.print("100");
+		} else if ((bat_percent > 100) && (bat_percent <= 10)){
+			lcd.print(" ");
+			lcd.print(bat_percent);
+		} else if (bat_percent > 10){
+			lcd.print("  ");
+			lcd.print(bat_percent);
+		}
+
+		if ((analogRead(ACTION_BUTTON) >= BUTTON_OK - 10) && (analogRead(ACTION_BUTTON) <= BUTTON_OK + 10)) {
+			while (analogRead(ACTION_BUTTON) < 1000);
+			delay(50);
+			lcd.clear();
+			system_state	= MENU_STATE;
+			break;
+		}
+
+		delay(500);
+	}
+}
+
+byte settings(byte all_element, char settings_array[][15]) {
+	lcd.clear();
+
+	byte	selected		= 0,
+			on_display		= 0;
+
+	bool	key_pressed_ok	= true;
+
+	while (true) {
+		if (key_pressed_ok) {
+			if (selected == on_display) {
+				lcd.setCursor(0,0);
+				lcd.print(">");
+				lcd.setCursor(0,1);	
+				lcd.print(" ");
+			} else {
+				lcd.setCursor(0,1);	
+				lcd.print(">");
+				lcd.setCursor(0,0);
+				lcd.print(" ");
+			}
+
+			lcd.setCursor(1,0);
+			lcd.print(settings_array[on_display]);
+
+			if (on_display + 1 < all_element) {
+				lcd.setCursor(1,1);
+				lcd.print(settings_array[on_display + 1]);
+			}
+		}
+
+		key_pressed_ok	= true;
+
+		switch (key_pressed()) {
+
+			case BUTTON_OK:		return selected;
+								break;
+
+			case BUTTON_LEFT:	if (selected != 0) {
+									if (selected == on_display) {
+										lcd.clear();
+										on_display	-= 2;
+									}
+
+									selected--;
+								}
+								break;
+
+			case BUTTON_RIGHT:	if (selected < all_element - 1) {
+									if (selected == (on_display + 1)) {
+										lcd.clear();
+										on_display	+= 2;
+									}
+
+									selected++;
+								}
+								break;
+
+			default:			key_pressed_ok	= false;
+								break;
+		}
+	}
+}
 
 void setup() {
 	#ifdef DEBUG
@@ -61,6 +237,8 @@ void setup() {
 
 	/*Прерывание на 3-ем цифровом канале для подсчёта скорости*/
 	attachInterrupt(1, speed, CHANGE);
+
+	lcd.createChar(0, bat_icon);
 
 	#ifdef FIRST_ON
 	sys_conf load_to_eeprom;
@@ -106,6 +284,30 @@ void ReadSysConfEEPROM(sys_conf *str, int base) {
 }
 
 void loop() {
+	if (system_state == LOAD_STATE) {
+		lcd.clear();
+		lcd.print("Loading system..");
+		lcd.setCursor(0, 1);
+		lcd.print("Version: ");
+		lcd.print(VERSION);
+		delay(3000);
+		system_state	= SPEED_STATE;
+	}
+
+	if (system_state == SPEED_STATE) {
+		road_mode();
+	}
+
+	if (system_state == MENU_STATE) {
+		char settings_array[3][15]	= {
+			"Speedometr",
+			"Settings",
+			"About system"
+		};
+
+		settings(3, settings_array);
+		system_state	= SPEED_STATE;
+	}
 }
 
 void alarm() {	// Сигнализация
@@ -133,7 +335,7 @@ void speed() {	// Подсчёт скорости
 
 
 
-void input_password() {
+/*void input_password() {
 	lcd.clear();			// Очистка экрана
 	lcd.setCursor(0, 0);	// Установка указателя в левый верхний угол
 	lcd.print("Password:");
@@ -158,4 +360,4 @@ void input_password() {
 	lcd.setCursor(0,0);
 	lcd.print("Complete!");
 	delay(2000);
-}
+}*/
