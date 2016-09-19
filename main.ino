@@ -29,7 +29,7 @@ static byte	bat_in_icon[8]	= {
 LiquidCrystal_I2C lcd(0x27,16,2);	// Инициализация дисплея (адрес, количество символов, количество строк)
 
 struct sys_conf {
-	byte	password[4],		// Пароль, для отключения сигнала
+	byte	password[6],		// Пароль, для отключения сигнала
 			red_speed,			// Включать ли красный свет при уменьшении скорости
 			time_to_slpeep,		// Время, после которого компьютер уснёт (минуты)
 			auto_led,			// Включать подсветку экрана по датчику света или нет
@@ -106,7 +106,9 @@ unsigned int key_pressed() {
 }
 
 void road_mode() {	// Режим спидометра
-	float	speed_old		= 0.0;
+	float	speed_old	= 0.0;
+
+	int		wait_key	= 0;
 
 	lcd.clear();
 	lcd.print("km/h: ");
@@ -117,7 +119,7 @@ void road_mode() {	// Режим спидометра
 	lcd.setCursor(15, 1);
 	lcd.write(0);
 
-	while (true) {
+	while (system_state	== SPEED_STATE) {
 		if (speed_old > speed_now) {
 			lcd.setCursor(5, 0);
 			lcd.print("    ");
@@ -143,19 +145,19 @@ void road_mode() {	// Режим спидометра
 			lcd.print(bat_percent);
 		}
 
-		if ((analogRead(ACTION_BUTTON) >= BUTTON_OK - 10) && (analogRead(ACTION_BUTTON) <= BUTTON_OK + 10)) {
-			while (analogRead(ACTION_BUTTON) < 1000);
-			delay(50);
-			lcd.clear();
-			system_state	= MENU_STATE;
-			break;
+		for (wait_key	= 0; wait_key < 500; wait_key++, delay(1)) {
+			if ((analogRead(ACTION_BUTTON) >= BUTTON_OK - 10) && (analogRead(ACTION_BUTTON) <= BUTTON_OK + 10)) {
+				while (analogRead(ACTION_BUTTON) < 1000);
+				delay(50);
+				lcd.clear();
+				system_state	= MENU_STATE;
+				break;
+			}
 		}
-
-		delay(500);
 	}
 }
 
-byte settings(byte all_element, char settings_array[][15]) {
+byte display_list(byte all_element, char settings_array[][15]) {
 	lcd.clear();
 
 	byte	selected		= 0,
@@ -299,14 +301,35 @@ void loop() {
 	}
 
 	if (system_state == MENU_STATE) {
-		char settings_array[3][15]	= {
+		char menu_array[3][15]	= {
 			"Speedometr",
-			"Settings",
-			"About system"
+			"Statistik",
+			"Settings"
 		};
 
-		settings(3, settings_array);
-		system_state	= SPEED_STATE;
+		switch (display_list(3, menu_array)) {
+			case 0:	system_state	= SPEED_STATE;
+					break;
+
+			case 2:	system_state	= SETTINGS_STATE;
+					break;
+		}
+	}
+
+	if (system_state == SETTINGS_STATE) {
+		char settings_array[3][15]	= {
+			"Password",
+			"About system",
+			"Back"
+		};
+
+		switch (display_list(3, settings_array)) {
+			case 0:	input_password();
+					break;
+
+			case 2:	system_state	= MENU_STATE;
+					break;
+		}
 	}
 }
 
@@ -335,29 +358,46 @@ void speed() {	// Подсчёт скорости
 
 
 
-/*void input_password() {
+void input_password() {
 	lcd.clear();			// Очистка экрана
-	lcd.setCursor(0, 0);	// Установка указателя в левый верхний угол
-	lcd.print("Password:");
-	lcd.setCursor(9, 0);
+	lcd.print("New password");
 
-	for (byte	i	= 0; i < 4; i++) {
-		while ((digitalRead(BUTTON_OK) == BUTTON_PRESS) || (digitalRead(BUTTON_LEFT) == BUTTON_PRESS) || digitalRead(BUTTON_RIGHT) == BUTTON_PRESS);	// Ожидание нажатия любой кнопки
+	lcd.setCursor(1, 0);	// Установка указателя в левый верхний угол
+	lcd.print("Password: ");
 
-		if (digitalRead(BUTTON_OK) == BUTTON_PRESS) {
-			btc_config.password[i]	= BUTTON_OK;
-		} else if (digitalRead(BUTTON_LEFT) == BUTTON_PRESS) {
-			btc_config.password[i]	= BUTTON_LEFT;
-		} else if (digitalRead(BUTTON_RIGHT) == BUTTON_PRESS) {
-			btc_config.password[i]	= BUTTON_RIGHT;
-		}
-
-		lcd.setCursor(9 + i, 0);
+	for (byte	i	= 0; i < 6; i++) {
+		btc_config.password[i]	= key_pressed();
 		lcd.print("*");
 	}
 
 	lcd.clear();
-	lcd.setCursor(0,0);
 	lcd.print("Complete!");
 	delay(2000);
-}*/
+}
+
+bool read_password() {
+	bool	wrong	= false;
+
+	lcd.clear();			// Очистка экрана
+	lcd.print("Current password");
+	
+	lcd.setCursor(1, 0);	// Установка указателя в левый верхний угол
+	lcd.print("Password: ");
+
+	for (byte	i	= 0; i < 6; i++) {
+		if (btc_config.password[i]	!= key_pressed()) {
+			wrong	= true;
+		}
+
+		lcd.print("*");
+	}
+
+	lcd.clear();
+	if (wrong) {
+		lcd.print("Incorrect!");
+	} else {
+		lcd.print("Pass!");
+	}
+
+	delay(2000);
+}
