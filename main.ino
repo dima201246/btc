@@ -46,7 +46,10 @@ struct sys_conf {
 #define LIGHT_SENSOR	7
 
 /*Цифровые выводы*/
-#define BIP				9
+#define	PWM_S1			5
+#define	PWM_S2			6
+#define	PWM_S3			9
+#define BIP				4
 #define DISPLAY_LIGHT	10
 #define VIBRO_SENSOR	7
 
@@ -85,6 +88,10 @@ void setup() {
 	lcd.setCursor(0, 1);
 	lcd.print("Version: ");
 	lcd.print(VERSION);
+
+	pinMode(PWM_S1, OUTPUT);
+	pinMode(PWM_S2, OUTPUT);
+	pinMode(PWM_S3, OUTPUT);
 
 	tone(BIP, 100, 250);
 	delay(250);
@@ -157,11 +164,12 @@ void loop() {
 
 	if (system_state == MENU_STATE) {
 		#ifdef DEBUG
-		char menu_array[5][15]	= {
+		char menu_array[6][15]	= {
 		#else
-		char menu_array[4][15]	= {
+		char menu_array[5][15]	= {
 		#endif
-			"Sleep",
+			"Blue spark",
+			"COOL MODE",
 			"Speedometr",
 			"Statistik",
 		#ifdef DEBUG
@@ -173,20 +181,28 @@ void loop() {
 		};
 
 		#ifdef DEBUG
-		switch (display_list(5, menu_array)) {
+		switch (display_list(6, menu_array)) {
 		#else
-		switch (display_list(4, menu_array)) {
+		switch (display_list(5, menu_array)) {
 		#endif
-			case 0:	alarm_mode();
-					break;
-			case 1: system_state	= SPEED_STATE;
+			case 0:	if (digitalRead(PWM_S2) == LOW) {
+						digitalWrite(PWM_S2, HIGH);
+					} else {
+						digitalWrite(PWM_S2, LOW);
+					}
 					break;
 
-			case 3: system_state	= SETTINGS_STATE;
+			case 1: cool_mode();
+					break;
+
+			case 2: system_state	= SPEED_STATE;
+					break;
+
+			case 4: system_state	= SETTINGS_STATE;
 					break;
 
 			#ifdef DEBUG
-			case 4: self_test();
+			case 5: self_test();
 					break;
 			#endif
 		}
@@ -224,6 +240,21 @@ void loop() {
 					break;
 		}
 	}
+}
+
+void cool_mode () {
+	lcd.clear();
+	lcd.print("   COOL MODE");
+	byte light_level;
+
+	digitalWrite(PWM_S1, LOW);
+
+	while (analogRead(ACTION_BUTTON) < 5) {
+		for (light_level	= 0; light_level < 255; light_level++, delay(10), analogWrite(PWM_S2, light_level));
+		for (light_level	= 255; light_level != 0; light_level--, delay(10), analogWrite(PWM_S2, light_level));
+	}
+
+	while (analogRead(ACTION_BUTTON) > 5);
 }
 
 void alarm_mode() {
@@ -312,8 +343,10 @@ float input_float_number(char text[], float min_num, float max_num) {	// Вво�
 void sys_watch() {
 	if (analogRead(LIGHT_SENSOR) > 600) {
 		digitalWrite(DISPLAY_LIGHT, LOW);
+		digitalWrite(PWM_S1, LOW);
 	} else {
 		digitalWrite(DISPLAY_LIGHT, HIGH);
+		digitalWrite(PWM_S1, HIGH);
 	}
 }
 
