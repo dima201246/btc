@@ -36,9 +36,9 @@ static byte	bat_icon[8] = {
 /*bits system_byte*/
 #define RED_SPEED			(1 << 0)	// Включать ли красный свет при уменьшении скорости
 #define AUTO_BACKLIGHT		(1 << 1)	// Включать подсветку экрана по датчику света или нет
-#define AUTO_HEADLIGHTS		(1 << 2)	// Включать фару по датчику света или нет
+#define AUTO_HEADLIGHT		(1 << 2)	// Включать фару по датчику света или нет
 #define AlARM_STATE			(1 << 3)	// Для того, чтобы даже после сброса сигнализация не выключилась
-#define NENON_ON_DOWNTIME	(1 << 4)	// Плавное свечение нижней подсветки в простое
+#define NEON_ON_DOWNTIME	(1 << 4)	// Плавное свечение нижней подсветки в простое
 
 struct sys_conf {
 	byte	password[6],		// Пароль, для отключения сигнала
@@ -51,7 +51,7 @@ struct sys_conf {
 			system_byte,		// Байт взявший в себя функцию нескольких болевкских переменных
 			lux_light_on,		// При какой яркости включать фару
 			lux_backlight_on,	// При какой яркости включать подсветку экрана
-			lux_headlight;		// Яркость фары
+			bright_headlight;		// Яркость фары
 
 	float	distance,
 			max_speed,
@@ -89,6 +89,14 @@ struct sys_conf {
 #define	BUT_DOWN			3
 #define	BUT_SIGNAL			4
 
+/*Для определения заряда батарей*/
+#define TYPVBG				1.1
+#define R1_P0				0
+#define R2_P0				0
+#define R1_P1				0
+#define R2_P1				0
+
+
 /*bits turn_signals*/
 #define TURN_SIGNAL_ON		(1 << 0)
 #define TURN_SIGNAL_LEFT	(1 << 1)
@@ -111,8 +119,9 @@ byte		bat_percent		= 100,
 #define SPEED_MODE			0
 #define ALARM_MODE			1
 #define MENU_MODE			2
-#define SLEEP_MODE			3
-#define ENGINEERING_MODE	4
+#define SETTING_MODE		3
+#define SLEEP_MODE			4
+#define ENGINEERING_MODE	5
 
 sys_conf		btc_config; // Конфигурация системы
 
@@ -152,6 +161,8 @@ void setup() {
 	attachInterrupt(0, alarm, CHANGE);
 	attachInterrupt(1, speed, CHANGE);
 
+	analogReference(DEFAULT);	// DEFAULT INTERNAL использовать Vcc как AREF
+
 	lcd.createChar(0, bat_icon);	// Загрузка иконки батареи
 
 	#ifdef DEBUG
@@ -165,7 +176,7 @@ void setup() {
 	#ifdef FIRST_LOADING
 	btc_config	= {};
 	btc_config.time_to_slpeep	= 5;
-	set_bit(btc_config.system_byte, AUTO_BACKLIGHT);
+	btc_config.bright_headlight	= 254;
 	calibration();
 	input_password();
 	WriteSysConfEEPROM(btc_config, 0);
@@ -221,7 +232,7 @@ void setup() {
 	Serial.println(btc_config.lux_backlight_on);
 
 	Serial.print("btc_config.lux_headlight: ");
-	Serial.println(btc_config.lux_headlight);
+	Serial.println(btc_config.bright_headlight);
 
 	Serial.print("btc_config.distance: ");
 	Serial.println(btc_config.distance);
@@ -233,9 +244,12 @@ void setup() {
 	Serial.println(btc_config.wheel_length);
 	#endif
 
-	if ((analogRead(ACTION_BUTTON) > (btc_config.button_ok_signal - 5)) && (analogRead(ACTION_BUTTON) > (btc_config.button_ok_signal - 5))) {
+	if ((analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal - 5)) && (analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal - 5))) {
+		system_mode	= ENGINEERING_MODE;
 		engineering_menu();
 	}
+
+	registerWrite(0);
 
 	system_mode	= SPEED_MODE;
 }
@@ -248,6 +262,9 @@ void loop() {
 		case ALARM_MODE:	break;
 
 		case MENU_MODE:		menu();
+							break;
+
+		case SETTING_MODE:	settings();
 							break;
 
 		case SLEEP_MODE:	break;
@@ -269,19 +286,21 @@ void speed() {	// Подсчёт скорости
 	}
 }
 
-void(* resetFunc) (void) = 0; // Функция сброса arduino
-
 bool sys_watch() {
-	if ((bit_seted(btc_config.system_byte, AUTO_HEADLIGHTS)) && (analogRead(LIGHT_SENSOR) > btc_config.lux_light_on)) {	// Следилка за фарой
+	if ((bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
 		digitalWrite(HEADLIGHT, LOW);
 	} else {
-		analogWrite(HEADLIGHT, btc_config.lux_headlight);
+		analogWrite(HEADLIGHT, btc_config.bright_headlight);
 	}
 
-	if ((bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analogRead(LIGHT_SENSOR) > btc_config.lux_backlight_on)) {	// Следилка за фарой
+	if ((bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_backlight_on)) {	// Следилка за подсветкой экрана
 		digitalWrite(DISPLAY_LIGHT, LOW);
 	} else {
 		digitalWrite(DISPLAY_LIGHT, LOW);
+	}
+
+	if ((bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
+		digitalWrite(DISPLAY_LIGHT, HIGH);
 	}
 
 	return true;
@@ -297,7 +316,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 
 		key_now	= analogRead(ACTION_BUTTON);
 		
-		#ifdef DEBUG
+		#ifdef DEBUG_1
 		Serial.println("****");
 		Serial.print("Key pressed: ");
 		Serial.println(key_now);
@@ -313,7 +332,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 
 		key_now	= analog_to_byte(key_now);
 
-		#ifdef DEBUG
+		#ifdef DEBUG_1
 		Serial.println(key_now);
 		#endif
 
@@ -352,7 +371,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 		delay_time++;
 	}
 
-	#ifdef DEBUG
+	#ifdef DEBUG_1
 	Serial.println("****");
 	#endif
 
@@ -363,9 +382,22 @@ void about() {
 	lcd.clear();
 	lcd.print("BlueSparkProject");
 	lcd.setCursor(0, 1);
-	lcd.print(__DATE__);
-	lcd.print(" ");
+	lcd.print("Version: ");
+	lcd.print(VERSION);
+	key_pressed(true);
+
+	lcd.clear();
+	lcd.print("Build time:");
 	lcd.print(__TIME__);
+	lcd.setCursor(0, 1);
+	lcd.print("Date:");
+	lcd.print(__DATE__);
+	key_pressed(true);
+
+	lcd.clear();
+	lcd.print(":DV company 2016");
+	lcd.setCursor(0, 1);
+	lcd.print("dima201246");
 	key_pressed(true);
 }
 
@@ -375,11 +407,12 @@ void menu() {
 		"Speedometr",
 		"Stopwatch",
 		"System state",
-		"Settings"
+		"Settings",
+		"Back"
 	};
 
-	while (system_mode == MENU_MODE) {
-		switch(display_list(menu_array, 5)) {
+	while ((system_mode == MENU_MODE) && (sys_watch())) {
+		switch(display_list(menu_array, 6)) {
 			case 0:	break;
 
 			case 1:	system_mode	= SPEED_MODE;
@@ -389,15 +422,18 @@ void menu() {
 
 			case 3:	break;
 
-			case 4:	settings();
+			case 4:	system_mode	= SETTING_MODE;
 					break;
+
+			default:	system_mode	= SPEED_MODE;
+						break;
 		}
 	}
 }
 
 void settings() {
-	byte changes	= false,	// Для отслеживания изменений и последующей записи в EEPROM
-		 count = 0;
+	bool	changes	= false;	// Для отслеживания изменений и последующей записи в EEPROM
+	byte	count = 0;
 
 	char setting_array[][15]	= {
 		"Blue light",
@@ -408,13 +444,16 @@ void settings() {
 		"Back"
 	};
 
-	while (true) {
+	while ((system_mode	== SETTING_MODE) && (sys_watch())) {
 		switch (display_list(setting_array, 6)) {
 			case 0: if (digitalRead(LOWER_LIGHT) == HIGH) {
 						digitalWrite(LOWER_LIGHT, LOW);
 					} else {
 						digitalWrite(LOWER_LIGHT, HIGH);
 					}
+					lcd.clear();
+					lcd.print("       OK");
+					delay_w(1000);
 					break;
 
 			case 1:	while ((read_password() == false) && (count < 3)) {	// Счётчик количества неправильных вводов
@@ -429,26 +468,19 @@ void settings() {
 					}
 					break;
 
-			case 2: break;
+			case 2: if (!changes) changes	= light_settings();
+					else light_settings();
+					break;
 
-			case 3:	TimeElements	t_n;
-					time_t			timeVal;
-					t_n.Second	= 0;
-					t_n.Hour	= input_int_number("Input hour", 0, 23);
-					t_n.Minute	= input_int_number("Input minutes", 0, 59);
-					t_n.Day		= input_int_number("Input day", 1, 31);
-					t_n.Month	= input_int_number("Input month", 1, 12);
-					t_n.Year	= input_int_number("Input year", 15, 20) + 30;
-					timeVal		= makeTime(t_n);
-					RTC.set(timeVal);
-					setTime(timeVal);
+			case 3:	if (!changes) changes	= time_settings();
+					else time_settings();
 					break;
 
 			case 4: about();
 					break;
 
-			case 5: return;
-					break;
+			default:	system_mode	= MENU_MODE;
+						break;
 		}
 	}
 
@@ -519,11 +551,11 @@ byte display_list(char list_array[][15], byte all_element) {
 	}
 }
 
-byte input_int_number(const char *text, byte min_num, byte max_num) {	// Ввод целочисленного числа
+byte input_int_number(const char *text, byte min_num, byte max_num, byte stnd) {	// Ввод целочисленного числа
 	lcd.clear();
 	lcd.print(text);
 
-	byte	same_num = min_num;
+	byte	same_num = stnd;
 
 	while (true) {
 		lcd.setCursor(0, 1);
@@ -586,9 +618,7 @@ float input_float_number(char text[], float min_num, float max_num) {	// Вво�
 	}
 }
 
-byte input_int_number(byte min_num, byte max_num) {	// Ввод целочисленного числа
-	byte	same_num = min_num;
-
+bool input_int_number(byte min_num, byte max_num, byte &same_num) {	// Ввод целочисленного числа
 	lcd.setCursor(0, 1);
 	lcd.print("   ");
 
@@ -601,6 +631,7 @@ byte input_int_number(byte min_num, byte max_num) {	// Ввод целочисл
 						} else {
 							same_num++;
 						}
+						return true;
 						break;
 
 		case BUT_DOWN:	if (same_num == min_num) {
@@ -608,11 +639,14 @@ byte input_int_number(byte min_num, byte max_num) {	// Ввод целочисл
 						} else {
 							same_num--;
 						}
+						return true;
 						break;
 
-		case BUT_OK:	return same_num;
+		case BUT_OK:	return false;
 						break;
 	}
+
+	return true;
 }
 
 void registerWrite(int whichPin, int whichState) {
@@ -784,7 +818,7 @@ void road_mode() {	// Режим спидометра
 void calibration() {
 	byte	key_num = 0;
 
-	while (key_num != 3) {
+	while (key_num != 5) {
 		while (analogRead(ACTION_BUTTON) > 5);
 		lcd.clear();
 
@@ -829,6 +863,7 @@ void calibration() {
 
 			lcd.print(btc_config.button_signal);
 			key_num++;
+			continue;
 		}
 
 		if (key_num == 4) {
@@ -836,11 +871,10 @@ void calibration() {
 			lcd.setCursor(0, 1);
 
 			btc_config.button_ok_signal	= 0;
-
+		
 			while ((analog_to_byte(analogRead(ACTION_BUTTON)) > 2) || (btc_config.button_ok_signal == 0)) {
 				btc_config.button_ok_signal	= analog_to_byte(analogRead(ACTION_BUTTON));
 			}
-
 
 			lcd.print(btc_config.button_ok_signal);
 			key_num++;
@@ -848,7 +882,9 @@ void calibration() {
 	}
 
 	while (analogRead(ACTION_BUTTON) > 5);
-	lcd.print("Key OK!");
+
+	lcd.clear();
+	lcd.print("Calibration end!");
 	delay(2000);
 }
 
@@ -882,7 +918,7 @@ void self_test() {
 		lcd.setCursor(0, 1);
 		lcd.print(analogRead(ACTION_BUTTON));
 		delay(500);
-		if ((analogRead(ACTION_BUTTON) > (btc_config.button_ok - 5)) && (analogRead(ACTION_BUTTON) < (btc_config.button_ok + 5))) break;
+		if ((analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok - 2)) && (analog_to_byte(analogRead(ACTION_BUTTON)) < (btc_config.button_ok + 2))) break;
 	}
 
 	lcd.clear();
@@ -935,6 +971,266 @@ void engineering_menu() {
 	char en_menu[][15] = {
 		"Calibration",
 		"Self test",
-		"Continue work"
+		"Continue"
 	};
+
+	lcd.clear();
+	lcd.print("ENGINEERING MODE");
+
+	while (analogRead(ACTION_BUTTON) > 5);
+
+	while ((sys_watch()) && (system_mode == ENGINEERING_MODE)) {
+		switch (display_list(en_menu, 3)) {
+			case 0:	calibration();
+					WriteSysConfEEPROM(btc_config, 0);
+					break;
+
+			case 1:	self_test();
+					break;
+
+			default:	system_mode	= SPEED_MODE;
+						break;
+		}
+	}
+}
+
+byte bat_state(byte pin) {	
+	float	vcc			= 0.0,
+			curVoltage	= 0.0;
+
+	for (byte	i	= 0; i < 5; i++) {	// Получение точного значения опорного напряжения
+		// Read 1.1V reference against AVcc
+		// set the reference to Vcc and the measurement to the internal 1.1V reference
+		#if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+			ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+		#elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
+			ADMUX = _BV(MUX5) | _BV(MUX0);
+		#elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
+			ADMUX = _BV(MUX3) | _BV(MUX2);
+		#else	// works on an Arduino 168 or 328
+			ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+		#endif
+
+		delay(3); // Wait for Vref to settle
+		ADCSRA |= _BV(ADSC); // Start conversion
+		while (bit_is_set(ADCSRA,ADSC)); // measuring
+
+		uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH
+		uint8_t high = ADCH; // unlocks both
+
+		vcc = vcc + (TYPVBG * 1023.0) / ((high<<8) | low);
+
+		sys_watch();
+		delay(5);
+	}
+
+	vcc	= vcc / 5;
+
+	for (byte	i	= 0; i < 5; i++) {
+		curVoltage = curVoltage + analogRead(pin);
+		sys_watch();
+		delay(10);
+	}
+
+	curVoltage = curVoltage / 5;
+
+	#ifdef DEBUG
+	Serial.print("Current voltage: ");
+	Serial.println(curVoltage);
+	#endif
+
+	if (pin == 0) {
+		return (byte)(((((curVoltage * vcc) / 1024.0) / (R2_P0 / (R1_P0 + R2_P0))) - 2.4) / 1.8 * 100);
+	} else {
+		return (byte)(((((curVoltage * vcc) / 1024.0) / (R2_P1 / (R1_P1 + R2_P1))) - 2.4) / 1.8 * 100);
+	}
+
+	return 0;
+}
+
+bool time_settings() {
+	char time_set_array[][15] = {
+		"Clock setting",
+		"Sleep time",
+		"Back"
+	};
+
+	bool	changes	= false;
+
+	while (sys_watch()) {
+		switch (display_list(time_set_array, 3)) {
+			case 0:	TimeElements	t_n;
+					time_t			timeVal;
+					t_n.Second	= 0;
+					t_n.Hour	= input_int_number("Input hour", 0, 23, hour());
+					t_n.Minute	= input_int_number("Input minutes", 0, 59, minute());
+					t_n.Day		= input_int_number("Input day", 1, 31, day());
+					t_n.Month	= input_int_number("Input month", 1, 12, month());
+					t_n.Year	= input_int_number("Input year", 16, 20, year()) + 30;
+					timeVal		= makeTime(t_n);
+					RTC.set(timeVal);
+					setTime(timeVal);
+					break;
+
+			case 1:	input_int_number("Input sleep time", 1, 254, btc_config.time_to_slpeep);
+					changes	= true;
+					break;
+
+			default:	if (changes) return true;
+						else return false;
+						break;
+		}
+	}
+
+	if (changes)
+		return true;
+
+	return false;
+}
+
+bool light_settings() {
+	char light_set_array[][15] {
+		"Red signal",
+		"Auto backlight",
+		"Auto headlight",
+		"Blue on sleep",
+		"Bright hdlight",
+		"Lux for screen",
+		"Lux for light",
+		"Back"
+	};
+
+	bool changes	= false;
+
+	byte value		= 0;
+
+	while (sys_watch()) {
+		switch (display_list(light_set_array, 8)) {
+			case 0:	value	= input_int_number("Red on stop", 0, 1, bit_seted(btc_config.system_byte, RED_BACK_LIGHT));
+					if (value != bit_seted(btc_config.system_byte, RED_BACK_LIGHT)) {
+						if (value) {
+							set_bit(btc_config.system_byte, RED_BACK_LIGHT);
+						} else {
+							unset_bit(btc_config.system_byte, RED_BACK_LIGHT);
+						}
+
+						changes	= true;
+					}
+					break;
+
+			case 1:	value	= input_int_number("Auto backlight", 0, 1, bit_seted(btc_config.system_byte, AUTO_BACKLIGHT));
+					if (value != bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) {
+						if (value) {
+							set_bit(btc_config.system_byte, AUTO_BACKLIGHT);
+						} else {
+							unset_bit(btc_config.system_byte, AUTO_BACKLIGHT);
+						}
+
+						changes	= true;
+					}
+					break;
+
+			case 2:	value	= input_int_number("Auto headlight", 0, 1, bit_seted(btc_config.system_byte, AUTO_HEADLIGHT));
+					if (value != bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) {
+						if (value) {
+							set_bit(btc_config.system_byte, AUTO_HEADLIGHT);
+						} else {
+							unset_bit(btc_config.system_byte, AUTO_HEADLIGHT);
+						}
+
+						changes	= true;
+					}
+					break;
+
+			case 3:	value	= input_int_number("Blue on downtime", 0, 1, bit_seted(btc_config.system_byte, NEON_ON_DOWNTIME));
+					if (value != bit_seted(btc_config.system_byte, NEON_ON_DOWNTIME)) {
+						if (value) {
+							set_bit(btc_config.system_byte, NEON_ON_DOWNTIME);
+						} else {
+							unset_bit(btc_config.system_byte, NEON_ON_DOWNTIME);
+						}
+
+						changes	= true;
+					}
+					break;
+
+			case 4:	value	= btc_config.bright_headlight;
+					lcd.clear();
+					lcd.print("Bright headlight");
+					lcd.setCursor(9, 1);
+					lcd.print("Now:");
+
+					while (sys_watch()) {
+						lcd.setCursor(13, 1);
+						lcd.print("   ");
+						lcd.setCursor(13, 1);
+						lcd.print(btc_config.bright_headlight);
+						analogWrite(HEADLIGHT, btc_config.bright_headlight);
+						if (!input_int_number(1, 254, btc_config.bright_headlight))
+							break;
+					}
+
+					digitalWrite(HEADLIGHT, LOW);
+
+					if (value != btc_config.bright_headlight) {
+						changes	= true;
+					}
+
+					break;
+
+			case 5:	value	= btc_config.lux_backlight_on;
+					lcd.clear();
+					lcd.print("Lux for screen");
+					lcd.setCursor(9, 1);
+					lcd.print("Now:");
+
+					while (sys_watch()) {
+						lcd.setCursor(13, 1);
+						lcd.print("   ");
+						lcd.setCursor(13, 1);
+						lcd.print(analog_to_byte(analogRead(LIGHT_SENSOR)));
+						if (!input_int_number(0, 254, btc_config.lux_backlight_on))
+							break;
+					}
+
+					if (value != btc_config.lux_backlight_on) {
+						changes	= true;
+					}
+
+					break;
+
+			case 6:	value	= btc_config.lux_light_on;
+					lcd.clear();
+					lcd.print("Lux for hdlight");
+					lcd.setCursor(9, 1);
+					lcd.print("Now:");
+
+					while (sys_watch()) {
+						lcd.setCursor(13, 1);
+						lcd.print("   ");
+						lcd.setCursor(13, 1);
+						lcd.print(analog_to_byte(analogRead(LIGHT_SENSOR)));
+						if (!input_int_number(0, 254, btc_config.lux_light_on))
+							break;
+					}
+
+					if (value != btc_config.lux_light_on) {
+						changes	= true;
+					}
+
+					break;
+
+			default:	if (changes) return true;
+						else return false;
+						break;
+		}
+	}
+
+	if (changes) return true;
+
+	return false;
+}
+
+void delay_w(int delay_num) {
+	for (int	delay_count	= 0; ((delay_count < delay_num) && (sys_watch())); delay_count++, delay(1));
 }
