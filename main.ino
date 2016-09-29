@@ -11,6 +11,7 @@
 // #define FIRST_LOADING
 // #define DEBUG
 // #define ENGINEERING_MODE
+#define TIKTOK 4
 
 #define set_bit(m,b)	((m) |= (b))
 #define unset_bit(m,b)	((m) &= ~(b))
@@ -21,7 +22,7 @@
 
 LiquidCrystal_I2C lcd(0x27,16,2); // Инициализация дисплея (адрес, количество символов, количество строк)
 
-#define VERSION "1.0(b)"
+#define VERSION "0.5(r)"
 
 static byte	bat_icon[8] = {
 	B01110,
@@ -171,8 +172,8 @@ void setup() {
 	setSyncProvider(RTC.get);			// Для времени
 
 	/*Прерывания*/
-	attachInterrupt(0, alarm, CHANGE);
-	attachInterrupt(1, speed, CHANGE);
+	attachInterrupt(0, alarm_sense, CHANGE);
+	attachInterrupt(1, speed_sense, RISING);
 
 	analogReference(DEFAULT);	// DEFAULT INTERNAL использовать Vcc как AREF
 
@@ -282,15 +283,18 @@ void loop() {
 		case SETTING_MODE:	settings();
 							break;
 
-		case SLEEP_MODE:	break;
+		case SLEEP_MODE:	system_sleep();
+							break;
 	}
 }
 
-void alarm() {
+void alarm_sense() {
 	alarm_now	= true;
 }
 
-void speed() {	// Подсчёт скорости
+void speed_sense() {	// Подсчёт скорости
+	system_mode	= SPEED_MODE;
+
 	if ((millis() - lastturn) > 80) { // Защита от случайных измерений (основано на том, что велосипед не будет ехать быстрее 120 кмч)
 		speed_now	= btc_config.wheel_length / ((float)(millis() - lastturn) / 1000) * 3.6;	// Расчет скорости, км/ч
 		lastturn	= millis();	// Запомнить время последнего оборота
@@ -299,19 +303,19 @@ void speed() {	// Подсчёт скорости
 }
 
 bool sys_watch() {
-	if ((bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
+	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
 		digitalWrite(HEADLIGHT, LOW);
-	} else {
+	} else if (system_mode != SLEEP_MODE) {
 		analogWrite(HEADLIGHT, btc_config.bright_headlight);
 	}
 
-	if ((bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_backlight_on)) {	// Следилка за подсветкой экрана
+	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_backlight_on)) {	// Следилка за подсветкой экрана
 		digitalWrite(DISPLAY_LIGHT, LOW);
-	} else {
-		digitalWrite(DISPLAY_LIGHT, LOW);
+	} else if (system_mode != SLEEP_MODE) {
+		digitalWrite(DISPLAY_LIGHT, HIGH);
 	}
 
-	if ((bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
+	if ((system_mode != SLEEP_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
 		digitalWrite(DISPLAY_LIGHT, HIGH);
 	}
 
@@ -425,7 +429,8 @@ void menu() {
 
 	while ((system_mode == MENU_MODE) && (sys_watch())) {
 		switch(display_list(menu_array, 6)) {
-			case 0:	break;
+			case 0:	system_mode	= SLEEP_MODE;
+					break;
 
 			case 1:	system_mode	= SPEED_MODE;
 					break;
@@ -498,7 +503,7 @@ void settings() {
 					else time_settings();
 					break;
 
-			case 4:	input_float_number("Wheel length (m)", 0.0, 50.0, btc_config.wheel_length);
+			case 4:	btc_config.wheel_length	= input_float_number("Wheel length (m)", 0.0, 10.0, btc_config.wheel_length);
 					changes	= true;
 					break;
 
@@ -549,6 +554,9 @@ byte display_list(char list_array[][15], byte all_element) {
 		key_pressed_ok	= true;
 
 		switch (key_pressed(true)) {
+			case BUT_SIGNAL:	return selected;
+								break;
+
 			case BUT_OK:	return selected;
 							break;
 
@@ -605,6 +613,9 @@ byte input_int_number(const char *text, byte min_num, byte max_num, byte same_nu
 
 			case BUT_OK:	return same_num;
 							break;
+
+			case BUT_SIGNAL:	return same_num;
+								break;
 		}
 	}
 }
@@ -636,6 +647,9 @@ float input_float_number(const char *text, float min_num, float max_num, float s
 
 			case BUT_OK:	return same_num;
 							break;
+
+			case BUT_SIGNAL:	return same_num;
+								break;
 		}
 	}
 }
@@ -665,6 +679,9 @@ bool input_int_number(byte min_num, byte max_num, byte &same_num) {	// Ввод 
 						break;
 
 		case BUT_OK:	return false;
+						break;
+
+		case BUT_SIGNAL:	return false;
 						break;
 	}
 
@@ -849,7 +866,14 @@ void road_mode() {	// Режим спидометра
 					lcd.setCursor(10, 1);
 					lcd.print(">");
 				}
-			}			
+			}
+
+			#ifdef TIKTOK
+			if (bit_seted(turn_signals, SECOND_ITERATION)) {
+				registerWrite(TIKTOK, 1);
+			}
+			#endif
+
 		}
 
 		for (road_delay	= 0; road_delay < 500; road_delay++) { 
@@ -993,6 +1017,9 @@ void calibration() {
 	}
 
 	while (analogRead(ACTION_BUTTON) > 5);
+
+	lcd.clear();
+	btc_config.wheel_length	= input_float_number("Wheel length (m)", 0.0, 10.0, btc_config.wheel_length);
 
 	lcd.clear();
 	lcd.print("Calibration end!");
