@@ -46,12 +46,24 @@ static byte	signal_icon[8] = {
 	B00001
 };
 
+static byte	lock_icon[8] = {
+	B01111,
+	B01111,
+	B00011,
+	B00111,
+	B00011,
+	B11111,
+	B11011,
+	B11111
+};
+
 /*bits system_byte*/
 #define RED_SPEED			(1 << 0)	// Включать ли красный свет при уменьшении скорости
 #define AUTO_BACKLIGHT		(1 << 1)	// Включать подсветку экрана по датчику света или нет
 #define AUTO_HEADLIGHT		(1 << 2)	// Включать фару по датчику света или нет
-#define AlARM_STATE			(1 << 3)	// Для того, чтобы даже после сброса сигнализация не выключилась
-#define NEON_ON_DOWNTIME	(1 << 4)	// Плавное свечение нижней подсветки в простое
+#define NEON_ON_DOWNTIME	(1 << 3)	// Плавное свечение нижней подсветки в простое
+#define ALARM_STATE			(1 << 4)	// Для того, чтобы даже после сброса сигнализация не выключилась
+#define ALARM_WRITED		(1 << 5)	// Было ли записано значение о сигнализации в EEPROM
 
 struct sys_conf {
 	byte	password[6],		// Пароль, для отключения сигнала
@@ -103,6 +115,7 @@ struct sys_conf {
 #define	BUT_SIGNAL			4
 #define BATTERY_ICON		0
 #define SIGNAL_ICON			1
+#define LOCK_ICON			2
 
 /*Для определения заряда батарей*/
 #define TYPVBG				1.1
@@ -128,7 +141,7 @@ float		speed_now		= 0.0,	// Скорость
 			distance		= 0.0;	// Расстояние
 
 byte		system_mode		= 0,
-			alarm_now		= false;
+			deep_sleep		= false;
 
 /*system_mode*/
 #define SPEED_MODE			0
@@ -179,6 +192,7 @@ void setup() {
 
 	lcd.createChar(BATTERY_ICON, bat_icon);	// Загрузка иконки батареи
 	lcd.createChar(SIGNAL_ICON, signal_icon);	// Загрузка иконки батареи
+	lcd.createChar(LOCK_ICON, lock_icon);	// Загрузка иконки батареи
 
 	#ifdef DEBUG
 	lcd.clear();
@@ -289,7 +303,7 @@ void loop() {
 }
 
 void alarm_sense() {
-	alarm_now	= true;
+	set_bit(btc_config.system_byte, ALARM_STATE);
 }
 
 void speed_sense() {	// Подсчёт скорости
@@ -317,6 +331,14 @@ bool sys_watch() {
 
 	if ((system_mode != SLEEP_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
 		digitalWrite(DISPLAY_LIGHT, HIGH);
+	}
+
+	if ((deep_sleep) && (system_mode == SPEED_MODE)) {
+		return false;
+	}
+
+	if ((deep_sleep) && (analogRead(ACTION_BUTTON) > 5)) {
+		return false;
 	}
 
 	return true;
@@ -487,8 +509,9 @@ void settings() {
 						count++;
 					}
 
-					if (count == 3) {
-						alarm_now	= true;
+					if (count >= 3) {
+						set_bit(btc_config.system_byte, ALARM_STATE);
+						system_mode	= ALARM_MODE;
 					} else {
 						input_password();
 						changes	= true;
@@ -1343,5 +1366,68 @@ void delay_w(int delay_num) {
 }
 
 void system_sleep() {
+	byte	count;
 
+	registerWrite(0);
+	digitalWrite(HEADLIGHT, LOW);
+	digitalWrite(DISPLAY_LIGHT, LOW);
+	digitalWrite(LOWER_LIGHT, LOW);
+	digitalWrite(RED_BACK_LIGHT, LOW);
+
+	deep_sleep	= true;
+
+	while (true) {
+		while ((sys_watch()) && (system_mode == SLEEP_MODE)) {
+			lcd.clear();
+
+			if (hour() < 10)
+				lcd.print(" ");
+
+			lcd.print(hour());
+			lcd.print(":");
+			lcd.print(minute());
+
+			lcd.print(" ");
+			lcd.print(day());
+			lcd.print(".");
+			lcd.print(month());
+			lcd.print(".");
+			lcd.print(year());
+
+			lcd.setCursor(1, 1);
+			lcd.print("I:");
+			lcd.print(bat_state(0));
+			lcd.print("%");
+			lcd.setCursor(8, 1);
+			lcd.print("E:");
+			lcd.print(bat_state(1));
+			lcd.print("%");
+
+			lcd.setCursor(15, 1);
+			lcd.write(LOCK_ICON);
+
+			delay_w(30000);
+		}
+
+		if (system_mode == SLEEP_MODE) {
+			deep_sleep	= false; // Выход из глубокого сна, чтобы можно было хоть что-нибудь ввести
+
+			while ((sys_watch()) && (analogRead(ACTION_BUTTON) > 5));
+
+			for (count	= 0; ((count < 3) && (!read_password())); count++);
+
+			if (count >= 3) {
+				set_bit(btc_config.system_byte, ALARM_STATE);
+				system_mode	= ALARM_MODE;
+				break;
+			} else {
+				break; 
+			}
+		}
+	}
+
+	if (system_mode	!= ALARM_MODE)
+		system_mode	= SPEED_MODE;
+
+	deep_sleep	= false;
 }
