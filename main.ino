@@ -113,6 +113,7 @@ struct sys_conf {
 #define	BUT_UP				2
 #define	BUT_DOWN			3
 #define	BUT_SIGNAL			4
+#define	BUT_OK_SIGNAL		5
 #define BATTERY_ICON		0
 #define SIGNAL_ICON			1
 #define LOCK_ICON			2
@@ -316,6 +317,8 @@ void speed_sense() {	// Подсчёт скорости
 	}
 }
 
+byte key_pressed(bool);
+
 bool sys_watch() {
 	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
 		digitalWrite(HEADLIGHT, LOW);
@@ -337,7 +340,7 @@ bool sys_watch() {
 		return false;
 	}
 
-	if ((deep_sleep) && (analogRead(ACTION_BUTTON) > 5)) {
+	if ((deep_sleep) && (key_pressed(false) == BUT_OK_SIGNAL)) {
 		return false;
 	}
 
@@ -397,6 +400,12 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 			Serial.println("Pressed key signal");
 			#endif
 			key_now = BUT_SIGNAL;
+			break;
+		} else if ((key_now >= btc_config.button_ok_signal - 5) && (key_now <= btc_config.button_ok_signal + 5)) {
+			#ifdef DEBUG
+			Serial.println("Pressed key ok + signal");
+			#endif
+			key_now = BUT_OK_SIGNAL;
 			break;
 		}
 
