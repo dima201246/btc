@@ -10,6 +10,7 @@
 
 // #define FIRST_LOADING
 // #define DEBUG
+// #define ENGINEERING_MODE
 
 #define set_bit(m,b)	((m) |= (b))
 #define unset_bit(m,b)	((m) &= ~(b))
@@ -31,6 +32,17 @@ static byte	bat_icon[8] = {
 	B11111,
 	B11111,
 	B11111
+};
+
+static byte	signal_icon[8] = {
+	B00001,
+	B00011,
+	B11111,
+	B11111,
+	B11111,
+	B11111,
+	B00011,
+	B00001
 };
 
 /*bits system_byte*/
@@ -88,14 +100,16 @@ struct sys_conf {
 #define	BUT_UP				2
 #define	BUT_DOWN			3
 #define	BUT_SIGNAL			4
+#define BATTERY_ICON		0
+#define SIGNAL_ICON			1
 
 /*Для определения заряда батарей*/
 #define TYPVBG				1.1
-#define R1_P0				0
-#define R2_P0				0
-#define R1_P1				0
-#define R2_P1				0
-
+#define R1_P0				469.3
+#define R2_P0				2254.0
+#define R1_P1				467.4
+#define R2_P1				2195.0
+#define VCC					5.02
 
 /*bits turn_signals*/
 #define TURN_SIGNAL_ON		(1 << 0)
@@ -104,16 +118,16 @@ struct sys_conf {
 #define SIGNAL_LEFT_ON		(1 << 3)
 #define SIGNAL_RIGHT_ON		(1 << 4)
 #define EMERGENCY_SIGNAL	(1 << 5)
+#define SECOND_ITERATION	(1 << 6)
+#define BIP_SIGNAL			(1 << 7)
 
 unsigned long	lastturn;	// Время последнего обращения
 
 float		speed_now		= 0.0,	// Скорость
 			distance		= 0.0;	// Расстояние
 
-byte		bat_percent		= 100,
-			system_mode		= 0,
-			alarm_now		= false,
-			turn_signals;
+byte		system_mode		= 0,
+			alarm_now		= false;
 
 /*system_mode*/
 #define SPEED_MODE			0
@@ -121,7 +135,6 @@ byte		bat_percent		= 100,
 #define MENU_MODE			2
 #define SETTING_MODE		3
 #define SLEEP_MODE			4
-#define ENGINEERING_MODE	5
 
 sys_conf		btc_config; // Конфигурация системы
 
@@ -163,7 +176,8 @@ void setup() {
 
 	analogReference(DEFAULT);	// DEFAULT INTERNAL использовать Vcc как AREF
 
-	lcd.createChar(0, bat_icon);	// Загрузка иконки батареи
+	lcd.createChar(BATTERY_ICON, bat_icon);	// Загрузка иконки батареи
+	lcd.createChar(SIGNAL_ICON, signal_icon);	// Загрузка иконки батареи
 
 	#ifdef DEBUG
 	lcd.clear();
@@ -244,10 +258,11 @@ void setup() {
 	Serial.println(btc_config.wheel_length);
 	#endif
 
+	#ifdef ENGINEERING_MODE
 	if ((analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal - 5)) && (analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal - 5))) {
-		system_mode	= ENGINEERING_MODE;
 		engineering_menu();
 	}
+	#endif
 
 	registerWrite(0);
 
@@ -268,9 +283,6 @@ void loop() {
 							break;
 
 		case SLEEP_MODE:	break;
-
-		case ENGINEERING_MODE:	engineering_menu();
-								break;
 	}
 }
 
@@ -316,7 +328,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 
 		key_now	= analogRead(ACTION_BUTTON);
 		
-		#ifdef DEBUG_1
+		#ifdef DEBUG
 		Serial.println("****");
 		Serial.print("Key pressed: ");
 		Serial.println(key_now);
@@ -332,7 +344,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 
 		key_now	= analog_to_byte(key_now);
 
-		#ifdef DEBUG_1
+		#ifdef DEBUG
 		Serial.println(key_now);
 		#endif
 
@@ -371,7 +383,7 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 		delay_time++;
 	}
 
-	#ifdef DEBUG_1
+	#ifdef DEBUG
 	Serial.println("****");
 	#endif
 
@@ -420,7 +432,16 @@ void menu() {
 
 			case 2:	break;
 
-			case 3:	break;
+			case 3:	lcd.clear();
+					lcd.print("Internal: ");
+					lcd.print(bat_state(0));
+					lcd.print("%");
+					lcd.setCursor(0, 1);
+					lcd.print("External: ");
+					lcd.print(bat_state(1));
+					lcd.print("%");
+					key_pressed(true);
+					break;
 
 			case 4:	system_mode	= SETTING_MODE;
 					break;
@@ -440,12 +461,13 @@ void settings() {
 		"Password",
 		"Light settings",
 		"Time setting",
+		"Wheel length",
 		"About system",
 		"Back"
 	};
 
 	while ((system_mode	== SETTING_MODE) && (sys_watch())) {
-		switch (display_list(setting_array, 6)) {
+		switch (display_list(setting_array, 7)) {
 			case 0: if (digitalRead(LOWER_LIGHT) == HIGH) {
 						digitalWrite(LOWER_LIGHT, LOW);
 					} else {
@@ -476,7 +498,11 @@ void settings() {
 					else time_settings();
 					break;
 
-			case 4: about();
+			case 4:	input_float_number("Wheel length (m)", 0.0, 50.0, btc_config.wheel_length);
+					changes	= true;
+					break;
+
+			case 5: about();
 					break;
 
 			default:	system_mode	= MENU_MODE;
@@ -551,11 +577,9 @@ byte display_list(char list_array[][15], byte all_element) {
 	}
 }
 
-byte input_int_number(const char *text, byte min_num, byte max_num, byte stnd) {	// Ввод целочисленного числа
+byte input_int_number(const char *text, byte min_num, byte max_num, byte same_num) {	// Ввод целочисленного числа
 	lcd.clear();
 	lcd.print(text);
-
-	byte	same_num = stnd;
 
 	while (true) {
 		lcd.setCursor(0, 1);
@@ -585,11 +609,9 @@ byte input_int_number(const char *text, byte min_num, byte max_num, byte stnd) {
 	}
 }
 
-float input_float_number(char text[], float min_num, float max_num) {	// Ввод числа с точкой
+float input_float_number(const char *text, float min_num, float max_num, float same_num) {	// Ввод числа с точкой
 	lcd.clear();
 	lcd.print(text);
-
-	float	same_num = min_num;
 
 	while (true) {
 		lcd.setCursor(0, 1);
@@ -738,7 +760,12 @@ void ReadSysConfEEPROM(sys_conf *str, int base) {
 }
 
 void road_mode() {	// Режим спидометра
-	float	speed_old = 0.1;
+	float	speed_old		= 0.1;
+
+	byte	turn_signals	= 0,
+			baterry_percent	= 0;
+
+	int		road_delay;
 
 	lcd.clear();
 	lcd.print("km/h: ");
@@ -747,7 +774,7 @@ void road_mode() {	// Режим спидометра
 	lcd.print("km:");
 
 	lcd.setCursor(15, 1);
-	lcd.write(0);
+	lcd.write(BATTERY_ICON);
 
 	#ifdef DEBUG
 	int	key_now;
@@ -788,33 +815,117 @@ void road_mode() {	// Режим спидометра
 		lcd.print(distance);
 
 		lcd.setCursor(12, 1);
-		if (bat_percent == 100) {
-			lcd.print("100");
-		} else if ((bat_percent > 100) && (bat_percent <= 10)){
+		baterry_percent	= bat_state(0); 
+
+		if ((100 > baterry_percent) && (baterry_percent >= 10))
 			lcd.print(" ");
-			lcd.print(bat_percent);
-		} else if (bat_percent > 10){
-			lcd.print("	");
-			lcd.print(bat_percent);
+
+		if (baterry_percent < 10)
+			lcd.print("  ");
+
+		lcd.print(baterry_percent);
+
+
+		if (bit_seted(turn_signals, TURN_SIGNAL_ON)) {
+			if (bit_seted(turn_signals, TURN_SIGNAL_LEFT)) {
+				if ((bit_seted(turn_signals, SIGNAL_LEFT_ON)) && (bit_seted(turn_signals, SECOND_ITERATION))) {
+					registerWrite(LEFT_TURN_LIGHT, 0);
+					lcd.setCursor(8, 1);
+					lcd.print(" ");
+				} else if ((bit_seted(turn_signals, SIGNAL_LEFT_ON)) && !(bit_seted(turn_signals, SECOND_ITERATION))) {
+					registerWrite(LEFT_TURN_LIGHT, 1);
+					lcd.setCursor(8, 1);
+					lcd.print("<");
+				}
+			}
+
+			if (bit_seted(turn_signals, TURN_SIGNAL_RIGHT)) {
+				if ((bit_seted(turn_signals, SIGNAL_RIGHT_ON)) && (bit_seted(turn_signals, SECOND_ITERATION))) {
+					registerWrite(RIGHT_TURN_LIGHT, 0);
+					lcd.setCursor(10, 1);
+					lcd.print(" ");
+				} else if ((bit_seted(turn_signals, SIGNAL_RIGHT_ON)) && !(bit_seted(turn_signals, SECOND_ITERATION))) {
+					registerWrite(RIGHT_TURN_LIGHT, 1);
+					lcd.setCursor(10, 1);
+					lcd.print(">");
+				}
+			}			
 		}
 
-		switch(key_pressed(false)) {
-			case BUT_OK:		system_mode	= MENU_MODE;
+		for (road_delay	= 0; road_delay < 500; road_delay++) { 
+
+			switch(key_pressed(false)) {
+				case BUT_OK:		system_mode	= MENU_MODE;
+									break;
+
+				case BUT_UP:		if (bit_seted(turn_signals, TURN_SIGNAL_RIGHT)) {
+										turn_signals	= 0;
+										registerWrite(0);
+										lcd.setCursor(10, 1);
+										lcd.print("  ");
+									}
+									if (!bit_seted(turn_signals, TURN_SIGNAL_ON)) {
+										set_bit(turn_signals, TURN_SIGNAL_ON);
+										set_bit(turn_signals, TURN_SIGNAL_LEFT);
+										set_bit(turn_signals, SIGNAL_LEFT_ON);
+										registerWrite(LEFT_TURN_LIGHT, 1);
+										lcd.setCursor(8, 1);
+										lcd.print("<");
+									}
+									break;
+
+				case BUT_DOWN:		if (bit_seted(turn_signals, TURN_SIGNAL_LEFT)) {
+										turn_signals	= 0;
+										registerWrite(0);
+										lcd.setCursor(8, 1);
+										lcd.print("   ");
+									}
+									if (!bit_seted(turn_signals, TURN_SIGNAL_ON)) {
+										set_bit(turn_signals, TURN_SIGNAL_ON);
+										set_bit(turn_signals, TURN_SIGNAL_RIGHT);
+										set_bit(turn_signals, SIGNAL_RIGHT_ON);
+										registerWrite(RIGHT_TURN_LIGHT, 1);
+										lcd.setCursor(10, 1);
+										lcd.print(">");
+									}
+									break;
+
+				case BUT_SIGNAL:	tone(BIP, 2000, 250);
+									set_bit(turn_signals, BIP_SIGNAL);
+									lcd.setCursor(9, 1);
+									lcd.write(SIGNAL_ICON);
+									break;
+
+				default:		if (bit_seted(turn_signals, TURN_SIGNAL_ON)) {
+									turn_signals	= 0;
+									registerWrite(0);
+									lcd.setCursor(8, 1);
+									lcd.print("   ");
+								}
 								break;
-
-			case BUT_UP:		break;
-			case BUT_DOWN:		break;
-			case BUT_SIGNAL:	break;
+			}
+			delay(1);
 		}
 
-		#ifdef DEBUG
-		delay(500);
-		#endif
+		if (bit_seted(turn_signals, BIP_SIGNAL)) {
+			lcd.setCursor(9, 1);
+			lcd.print(" ");
+		}
+
+		if (bit_seted(turn_signals, TURN_SIGNAL_ON)) {
+			if (bit_seted(turn_signals, SECOND_ITERATION)) {
+				unset_bit(turn_signals, SECOND_ITERATION);
+			} else {
+				set_bit(turn_signals, SECOND_ITERATION);
+			}
+		}
 	}
 
+	registerWrite(0);
 	while ((analogRead(ACTION_BUTTON) > 5) && (sys_watch()));	// Ожидание отжатия кнопки
 }
 
+#if defined(ENGINEERING_MODE) || defined(FIRST_LOADING)
 void calibration() {
 	byte	key_num = 0;
 
@@ -887,7 +998,9 @@ void calibration() {
 	lcd.print("Calibration end!");
 	delay(2000);
 }
+#endif
 
+#ifdef ENGINEERING_MODE
 void self_test() {
 	byte	i;
 
@@ -974,12 +1087,14 @@ void engineering_menu() {
 		"Continue"
 	};
 
+	bool	cycle	= true;
+
 	lcd.clear();
 	lcd.print("ENGINEERING MODE");
 
 	while (analogRead(ACTION_BUTTON) > 5);
 
-	while ((sys_watch()) && (system_mode == ENGINEERING_MODE)) {
+	while (cycle) {
 		switch (display_list(en_menu, 3)) {
 			case 0:	calibration();
 					WriteSysConfEEPROM(btc_config, 0);
@@ -988,61 +1103,26 @@ void engineering_menu() {
 			case 1:	self_test();
 					break;
 
-			default:	system_mode	= SPEED_MODE;
+			default:	cycle	= false;
 						break;
 		}
 	}
 }
+#endif
 
-byte bat_state(byte pin) {	
-	float	vcc			= 0.0,
-			curVoltage	= 0.0;
-
-	for (byte	i	= 0; i < 5; i++) {	// Получение точного значения опорного напряжения
-		// Read 1.1V reference against AVcc
-		// set the reference to Vcc and the measurement to the internal 1.1V reference
-		#if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
-			ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-		#elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
-			ADMUX = _BV(MUX5) | _BV(MUX0);
-		#elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
-			ADMUX = _BV(MUX3) | _BV(MUX2);
-		#else	// works on an Arduino 168 or 328
-			ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-		#endif
-
-		delay(3); // Wait for Vref to settle
-		ADCSRA |= _BV(ADSC); // Start conversion
-		while (bit_is_set(ADCSRA,ADSC)); // measuring
-
-		uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH
-		uint8_t high = ADCH; // unlocks both
-
-		vcc = vcc + (TYPVBG * 1023.0) / ((high<<8) | low);
-
-		sys_watch();
-		delay(5);
-	}
-
-	vcc	= vcc / 5;
-
-	for (byte	i	= 0; i < 5; i++) {
-		curVoltage = curVoltage + analogRead(pin);
-		sys_watch();
-		delay(10);
-	}
-
-	curVoltage = curVoltage / 5;
-
-	#ifdef DEBUG
-	Serial.print("Current voltage: ");
-	Serial.println(curVoltage);
-	#endif
-
+byte bat_state(byte pin) {
 	if (pin == 0) {
-		return (byte)(((((curVoltage * vcc) / 1024.0) / (R2_P0 / (R1_P0 + R2_P0))) - 2.4) / 1.8 * 100);
+		if ((((analogRead(0) * VCC) / 1024.0) / (R2_P0 / (R1_P0 + R2_P0))) < 1.0) {
+			return 0;
+		} else {
+			return (byte)(((((analogRead(0) * VCC) / 1024.0) / (R2_P0 / (R1_P0 + R2_P0))) - 2.4) / 1.8 * 100);
+		}
 	} else {
-		return (byte)(((((curVoltage * vcc) / 1024.0) / (R2_P1 / (R1_P1 + R2_P1))) - 2.4) / 1.8 * 100);
+		if ((((analogRead(1) * VCC) / 1024.0) / (R2_P1 / (R1_P1 + R2_P1))) < 1.0) {
+			return 0;
+		} else {
+			return (byte)(((((analogRead(1) * VCC) / 1024.0) / (R2_P1 / (R1_P1 + R2_P1))) - 2.4) / 1.8 * 100);
+		}
 	}
 
 	return 0;
@@ -1233,4 +1313,8 @@ bool light_settings() {
 
 void delay_w(int delay_num) {
 	for (int	delay_count	= 0; ((delay_count < delay_num) && (sys_watch())); delay_count++, delay(1));
+}
+
+void system_sleep() {
+
 }
