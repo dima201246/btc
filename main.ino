@@ -317,8 +317,6 @@ void speed_sense() {	// Подсчёт скорости
 	}
 }
 
-byte key_pressed(bool);
-
 bool sys_watch() {
 	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
 		digitalWrite(HEADLIGHT, LOW);
@@ -340,7 +338,7 @@ bool sys_watch() {
 		return false;
 	}
 
-	if ((deep_sleep) && (key_pressed(false) == BUT_OK_SIGNAL)) {
+	if ((deep_sleep) && (analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal + 2)) && (analog_to_byte(analogRead(ACTION_BUTTON)) < (btc_config.button_ok_signal - 2))) {
 		return false;
 	}
 
