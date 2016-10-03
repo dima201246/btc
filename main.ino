@@ -11,7 +11,7 @@
 // #define FIRST_LOADING
 // #define DEBUG
 // #define ENGINEERING_MODE
-#define TIKTOK 4
+// #define TIKTOK 4
 
 #define set_bit(m,b)	((m) |= (b))
 #define unset_bit(m,b)	((m) &= ~(b))
@@ -22,7 +22,7 @@
 
 LiquidCrystal_I2C lcd(0x27,16,2); // Инициализация дисплея (адрес, количество символов, количество строк)
 
-#define VERSION "0.5(r)"
+#define VERSION "0.87(b)"
 
 static byte	bat_icon[8] = {
 	B01110,
@@ -64,6 +64,7 @@ static byte	lock_icon[8] = {
 #define NEON_ON_DOWNTIME	(1 << 3)	// Плавное свечение нижней подсветки в простое
 #define ALARM_STATE			(1 << 4)	// Для того, чтобы даже после сброса сигнализация не выключилась
 #define ALARM_WRITED		(1 << 5)	// Было ли записано значение о сигнализации в EEPROM
+#define ALARM_WITHOUT_DOCK	(1 << 6)	// Сигналтзация при отключения от велосипеда
 
 struct sys_conf {
 	byte	password[6],		// Пароль, для отключения сигнала
@@ -76,7 +77,7 @@ struct sys_conf {
 			system_byte,		// Байт взявший в себя функцию нескольких болевкских переменных
 			lux_light_on,		// При какой яркости включать фару
 			lux_backlight_on,	// При какой яркости включать подсветку экрана
-			bright_headlight;		// Яркость фары
+			bright_headlight;	// Яркость фары
 
 	float	distance,
 			max_speed,
@@ -117,6 +118,10 @@ struct sys_conf {
 #define BATTERY_ICON		0
 #define SIGNAL_ICON			1
 #define LOCK_ICON			2
+#define ZERO_SPEED_DEL		2		// * 500 = секунд - время обнуления скорости
+#define SPEED_DEF			3.0		// На сколько должна упасть скорость, чтобы загорелся красный сигнал
+#define WAIT_INPUT_DELAY	5000	// Время, за которое должен быть осуществлён ввод иначе сигнализация
+#define BIP_ALARM_DELAY		250		// Задержка для смены тона сигнала при сигнализации
 
 /*Для определения заряда батарей*/
 #define TYPVBG				1.1
@@ -134,7 +139,16 @@ struct sys_conf {
 #define SIGNAL_RIGHT_ON		(1 << 4)
 #define EMERGENCY_SIGNAL	(1 << 5)
 #define SECOND_ITERATION	(1 << 6)
-#define BIP_SIGNAL			(1 << 7)
+
+/*bits road_signals*/
+#define BIP_SIGNAL			(1 << 0)
+#define RED_STOP_SIGNAL		(1 << 1)
+
+/*bits security_byte*/
+#define DEEP_SLEEP			(1 << 0)
+#define WAIT_INPUT			(1 << 1)
+#define BIP_FIRST_STAGE		(1 << 1)
+
 
 unsigned long	lastturn;	// Время последнего обращения
 
@@ -142,14 +156,23 @@ float		speed_now		= 0.0,	// Скорость
 			distance		= 0.0;	// Расстояние
 
 byte		system_mode		= 0,
-			deep_sleep		= false;
+			security_byte	= 0,
+			stopwatch_hour	= 0,
+			stopwatch_min	= 0,
+			stopwatch_sec	= 0;
+
+bool		stopwatch_run	= false;
+
+unsigned int	sys_wait_delay	= 0;
 
 /*system_mode*/
-#define SPEED_MODE			0
-#define ALARM_MODE			1
-#define MENU_MODE			2
-#define SETTING_MODE		3
-#define SLEEP_MODE			4
+#define SPEED_MODE		0
+#define ALARM_MODE		1
+#define MENU_MODE		2
+#define SETTING_MODE	3
+#define SLEEP_MODE		4
+#define STOPWATCH_MODE	5
+#define WARNING_MODE	6
 
 sys_conf		btc_config; // Конфигурация системы
 
@@ -158,10 +181,15 @@ void setup() {
 	Serial.begin(9600);
 	#endif
 
+	#if !defined(FIRST_LOADING)
+	ReadSysConfEEPROM(&btc_config, 0);
+	#endif
+
 	pinMode(EXT_ALARM, OUTPUT);
 	digitalWrite(EXT_ALARM, HIGH);
 
 	pinMode(DISPLAY_LIGHT, OUTPUT);		// Подключение подсветки экрана
+	pinMode(LOWER_LIGHT, OUTPUT);
 
 	lcd.begin();
 	lcd.print("Loading system...");
@@ -169,13 +197,14 @@ void setup() {
 	lcd.print("Version: ");
 	lcd.print(VERSION);
 
-	for (byte	i	= 0; i < 255; i++, delay(8), analogWrite(DISPLAY_LIGHT, i));
+	if (!bit_seted(btc_config.system_byte, ALARM_STATE))
+		for (byte	i	= 0; i < 255; i++, delay(8), analogWrite(DISPLAY_LIGHT, i), analogWrite(LOWER_LIGHT, i));
 
+	digitalWrite(LOWER_LIGHT, LOW);
 
 	/*Инициализация цифровых выводов*/
 	pinMode(BIP, OUTPUT);
 	pinMode(HEADLIGHT, OUTPUT);
-	pinMode(LOWER_LIGHT, OUTPUT);
 	pinMode(VIBRO_SENSOR, OUTPUT);
 	pinMode(LATCH_PIN, OUTPUT);
 	pinMode(RED_BACK_LIGHT, OUTPUT);
@@ -210,8 +239,6 @@ void setup() {
 	calibration();
 	input_password();
 	WriteSysConfEEPROM(btc_config, 0);
-	#else
-	ReadSysConfEEPROM(&btc_config, 0);
 	#endif
 
 	#ifdef DEBUG
@@ -282,7 +309,11 @@ void setup() {
 
 	registerWrite(0);
 
-	system_mode	= SPEED_MODE;
+	if (bit_seted(btc_config.system_byte, ALARM_STATE))
+		system_mode	= ALARM_MODE;
+	else
+		system_mode	= SPEED_MODE;
+
 }
 
 void loop() {
@@ -290,7 +321,8 @@ void loop() {
 		case SPEED_MODE:	road_mode();
 							break;
 
-		case ALARM_MODE:	break;
+		case ALARM_MODE:	alarm();
+							break;
 
 		case MENU_MODE:		menu();
 							break;
@@ -300,6 +332,9 @@ void loop() {
 
 		case SLEEP_MODE:	system_sleep();
 							break;
+
+		case STOPWATCH_MODE:	stopwatch();
+								break;
 	}
 }
 
@@ -308,38 +343,94 @@ void alarm_sense() {
 }
 
 void speed_sense() {	// Подсчёт скорости
-	system_mode	= SPEED_MODE;
+	if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE) && (system_mode != STOPWATCH_MODE)) {
+		system_mode	= SPEED_MODE;
 
-	if ((millis() - lastturn) > 80) { // Защита от случайных измерений (основано на том, что велосипед не будет ехать быстрее 120 кмч)
-		speed_now	= btc_config.wheel_length / ((float)(millis() - lastturn) / 1000) * 3.6;	// Расчет скорости, км/ч
-		lastturn	= millis();	// Запомнить время последнего оборота
-		distance	= distance + btc_config.wheel_length / 1000;	// Прибавляем длину колеса к дистанции при каждом обороте
+		if ((millis() - lastturn) > 80) { // Защита от случайных измерений (основано на том, что велосипед не будет ехать быстрее 120 кмч)
+			speed_now	= btc_config.wheel_length / ((float)(millis() - lastturn) / 1000) * 3.6;	// Расчет скорости, км/ч
+			lastturn	= millis();	// Запомнить время последнего оборота
+			distance	= distance + btc_config.wheel_length / 1000;	// Прибавляем длину колеса к дистанции при каждом обороте
+		}
 	}
 }
 
 bool sys_watch() {
-	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
+	if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on)) {	// Следилка за фарой
 		digitalWrite(HEADLIGHT, LOW);
-	} else if (system_mode != SLEEP_MODE) {
+		digitalWrite(RED_BACK_LIGHT, LOW);
+	} else if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE)) {
+		analogWrite(RED_BACK_LIGHT, btc_config.bright_headlight);
 		analogWrite(HEADLIGHT, btc_config.bright_headlight);
 	}
 
-	if ((system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_backlight_on)) {	// Следилка за подсветкой экрана
+	if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT)) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_backlight_on)) {	// Следилка за подсветкой экрана
 		digitalWrite(DISPLAY_LIGHT, LOW);
-	} else if (system_mode != SLEEP_MODE) {
+	} else if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE)) {
 		digitalWrite(DISPLAY_LIGHT, HIGH);
 	}
 
-	if ((system_mode != SLEEP_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
+	if ((system_mode != ALARM_MODE) && (system_mode != SLEEP_MODE) && (bit_seted(btc_config.system_byte, AUTO_BACKLIGHT) == false) && (digitalRead(DISPLAY_LIGHT) == LOW)) {	// Чтобы при выключенной автоподсветке включилась посветка экрана
 		digitalWrite(DISPLAY_LIGHT, HIGH);
 	}
 
-	if ((deep_sleep) && (system_mode == SPEED_MODE)) {
+	if ((bit_seted(security_byte, DEEP_SLEEP)) && (system_mode == SPEED_MODE)) {
 		return false;
 	}
 
-	if ((deep_sleep) && (analog_to_byte(analogRead(ACTION_BUTTON)) > (btc_config.button_ok_signal + 2)) && (analog_to_byte(analogRead(ACTION_BUTTON)) < (btc_config.button_ok_signal - 2))) {
+	if ((bit_seted(security_byte, DEEP_SLEEP)) && (analogRead(ACTION_BUTTON) > 5)) {
 		return false;
+	}
+
+	if ((system_mode == ALARM_MODE) && (!bit_seted(btc_config.system_byte, ALARM_WRITED))) {
+		digitalWrite(VIBRO_SENSOR, LOW);
+		sys_wait_delay	= 0;
+		set_bit(btc_config.system_byte, ALARM_WRITED);
+		WriteSysConfEEPROM(btc_config, 0);
+		delay(100);
+	}
+
+	if ((system_mode != ALARM_MODE) && (bit_seted(security_byte, WAIT_INPUT))) {	// Если был включён ввод пароля для выхода из сна
+		if (sys_wait_delay < WAIT_INPUT_DELAY) {
+			sys_wait_delay++;
+			delay(1);
+		} else {
+			unset_bit(security_byte, WAIT_INPUT);
+			system_mode	= ALARM_MODE;
+			set_bit(btc_config.system_byte, ALARM_STATE);
+			return false;
+		}
+	}
+
+	if (system_mode == ALARM_MODE) {
+		if (sys_wait_delay < BIP_ALARM_DELAY) {
+			sys_wait_delay++;
+		}
+
+		if (sys_wait_delay >= BIP_ALARM_DELAY) {
+			if (bit_seted(security_byte, BIP_FIRST_STAGE)) {
+				unset_bit(security_byte, BIP_FIRST_STAGE);
+				tone(BIP, 1000);
+				digitalWrite(EXT_ALARM, HIGH);
+				registerWrite(0);
+				digitalWrite(HEADLIGHT, LOW);
+				digitalWrite(RED_BACK_LIGHT, HIGH);
+				digitalWrite(LOWER_LIGHT, LOW);
+				digitalWrite(DISPLAY_LIGHT, HIGH);
+			} else {
+				set_bit(security_byte, BIP_FIRST_STAGE);
+				tone(BIP, 2000);
+				digitalWrite(EXT_ALARM, LOW);
+				registerWrite(255);
+				digitalWrite(HEADLIGHT, HIGH);
+				digitalWrite(RED_BACK_LIGHT, LOW);
+				digitalWrite(LOWER_LIGHT, HIGH);
+				digitalWrite(DISPLAY_LIGHT, LOW);
+			}
+
+			sys_wait_delay	= 0;
+		}
+
+		delay(1);
 	}
 
 	return true;
@@ -412,7 +503,8 @@ byte key_pressed(bool wait_keys /*Надо ли ожидать кнопку бе
 	}
 
 	while ((wait_keys) && (analogRead(ACTION_BUTTON) > 5) && (delay_time < SWITCH_NEXT)) {	// Ожидание зажатия
-		delay(1);
+		if (system_mode == ALARM_MODE) sys_watch();	// При сигнализации sys_watch выдаёт задержку в 1 (и для того, чтобы сигнал пищалки не замедлялся)
+		else delay(1);
 		delay_time++;
 	}
 
@@ -464,7 +556,8 @@ void menu() {
 			case 1:	system_mode	= SPEED_MODE;
 					break;
 
-			case 2:	break;
+			case 2:	system_mode	= STOPWATCH_MODE;
+					break;
 
 			case 3:	lcd.clear();
 					lcd.print("Internal: ");
@@ -496,12 +589,14 @@ void settings() {
 		"Light settings",
 		"Time setting",
 		"Wheel length",
+		"Alarm dock",
 		"About system",
+		"Reset results",
 		"Back"
 	};
 
 	while ((system_mode	== SETTING_MODE) && (sys_watch())) {
-		switch (display_list(setting_array, 7)) {
+		switch (display_list(setting_array, 9)) {
 			case 0: if (digitalRead(LOWER_LIGHT) == HIGH) {
 						digitalWrite(LOWER_LIGHT, LOW);
 					} else {
@@ -537,7 +632,16 @@ void settings() {
 					changes	= true;
 					break;
 
-			case 5: about();
+			case 5:	count = input_int_number("Alarm if no dock", 0, 1, bit_seted(btc_config.system_byte, ALARM_WITHOUT_DOCK));
+					if (count != bit_seted(btc_config.system_byte, ALARM_WITHOUT_DOCK)) {
+						if (count) set_bit(btc_config.system_byte, ALARM_WITHOUT_DOCK);
+						else unset_bit(btc_config.system_byte, ALARM_WITHOUT_DOCK);
+
+						changes	= true;
+					}
+					break;
+
+			case 6: about();
 					break;
 
 			default:	system_mode	= MENU_MODE;
@@ -558,6 +662,7 @@ byte display_list(char list_array[][15], byte all_element) {
 
 	bool	key_pressed_ok	= true;
 
+	// while (system_mode	!= SPEED_MODE) {
 	while (true) {
 		if (key_pressed_ok) {
 			if (selected == on_display) {
@@ -753,6 +858,8 @@ void input_password() {
 bool read_password() {
 	bool	wrong = false;
 
+	byte	key_now;
+
 	lcd.clear();			// Очистка экрана
 	lcd.print("Current password");
 	
@@ -760,8 +867,15 @@ bool read_password() {
 	lcd.print("Password: ");
 
 	for (byte i = 0; i < 6; i++) {
-		if (btc_config.password[i]	!= key_pressed(true)) {
+		key_now	= key_pressed(true);
+
+		if (btc_config.password[i]	!= key_now) {
 			wrong = true;
+		}
+
+		if (key_now == 0) {
+			return false;
+			break;
 		}
 
 		lcd.print("*");
@@ -771,13 +885,17 @@ bool read_password() {
 
 	if (wrong) {
 		lcd.print("Incorrect!");
-		delay(2000);
+		delay_w(2000);
 		return	false;
 	} else {
-		lcd.print("Pass!");
-		delay(2000);
+		if (system_mode != ALARM_MODE) {
+			lcd.print("Pass!");
+			delay(2000);
+		}
+
 		return	true;
 	}
+
 
 	return false;
 }
@@ -807,12 +925,16 @@ void ReadSysConfEEPROM(sys_conf *str, int base) {
 }
 
 void road_mode() {	// Режим спидометра
-	float	speed_old		= 0.1;
+	float	speed_old			= 0.1;
 
-	byte	turn_signals	= 0,
-			baterry_percent	= 0;
+	byte	turn_signals		= 0,
+			baterry_percent		= 0,
+			road_signals		= 0,
+			zero_speed_delay	= 0;
 
 	int		road_delay;
+
+	registerWrite(0);
 
 	lcd.clear();
 	lcd.print("km/h: ");
@@ -828,15 +950,37 @@ void road_mode() {	// Режим спидометра
 	#endif
 
 	while (system_mode == SPEED_MODE) {
+
+		if ((speed_old == speed_now) && (zero_speed_delay >= ZERO_SPEED_DEL)) {	// Обнуление скорости, если какое-то время скорость не меняется
+			speed_now	= 0.0;
+			speed_old	= 0.0;
+			lcd.setCursor(5, 0);
+			lcd.print("0.0   ");
+		}
+
 		if (speed_old > speed_now) {
 			lcd.setCursor(5, 0);
-			lcd.print("		");
+			lcd.print("      ");
+		}
+
+		if ((bit_seted(btc_config.system_byte, RED_SPEED)) && (speed_old > speed_now) && ((speed_old - speed_now) >= SPEED_DEF)) {	// При сбросе скорости загорается красный
+			digitalWrite(RED_BACK_LIGHT, HIGH);
+			set_bit(road_signals, RED_STOP_SIGNAL);
+		}
+
+		if ((bit_seted(road_signals, RED_STOP_SIGNAL)) && (speed_now > speed_old)) {
+			unset_bit(road_signals, RED_STOP_SIGNAL);
+			if (bit_seted(btc_config.system_byte, AUTO_HEADLIGHT) && (analog_to_byte(analogRead(LIGHT_SENSOR)) > btc_config.lux_light_on))
+				analogWrite(RED_BACK_LIGHT, btc_config.bright_headlight);
+			else
+				digitalWrite(RED_BACK_LIGHT, LOW);
 		}
 
 		if (speed_old != speed_now) {
 			lcd.setCursor(5, 0);
 			lcd.print(speed_now);
 			speed_old	= speed_now;
+			zero_speed_delay	= 0;
 		}
 
 		/*TIME START*/
@@ -906,18 +1050,22 @@ void road_mode() {	// Режим спидометра
 
 		}
 
-		for (road_delay	= 0; road_delay < 500; road_delay++) { 
+		for (road_delay	= 0; road_delay < 250; road_delay++) { 
 
 			switch(key_pressed(false)) {
 				case BUT_OK:		system_mode	= MENU_MODE;
 									break;
 
 				case BUT_UP:		if (bit_seted(turn_signals, TURN_SIGNAL_RIGHT)) {
-										turn_signals	= 0;
-										registerWrite(0);
+										unset_bit(turn_signals, TURN_SIGNAL_ON);
+										unset_bit(turn_signals, TURN_SIGNAL_RIGHT);
+										unset_bit(turn_signals, SIGNAL_RIGHT_ON);
+
+										registerWrite(RIGHT_TURN_LIGHT, 0);
 										lcd.setCursor(10, 1);
 										lcd.print("  ");
 									}
+
 									if (!bit_seted(turn_signals, TURN_SIGNAL_ON)) {
 										set_bit(turn_signals, TURN_SIGNAL_ON);
 										set_bit(turn_signals, TURN_SIGNAL_LEFT);
@@ -929,8 +1077,11 @@ void road_mode() {	// Режим спидометра
 									break;
 
 				case BUT_DOWN:		if (bit_seted(turn_signals, TURN_SIGNAL_LEFT)) {
-										turn_signals	= 0;
-										registerWrite(0);
+										unset_bit(turn_signals, TURN_SIGNAL_ON);
+										unset_bit(turn_signals, TURN_SIGNAL_LEFT);
+										unset_bit(turn_signals, SIGNAL_LEFT_ON);
+
+										registerWrite(LEFT_TURN_LIGHT, 0);
 										lcd.setCursor(8, 1);
 										lcd.print("   ");
 									}
@@ -944,8 +1095,8 @@ void road_mode() {	// Режим спидометра
 									}
 									break;
 
-				case BUT_SIGNAL:	tone(BIP, 2000, 250);
-									set_bit(turn_signals, BIP_SIGNAL);
+				case BUT_SIGNAL:	tone(BIP, 2000);
+									set_bit(road_signals, BIP_SIGNAL);
 									lcd.setCursor(9, 1);
 									lcd.write(SIGNAL_ICON);
 									break;
@@ -956,14 +1107,15 @@ void road_mode() {	// Режим спидометра
 									lcd.setCursor(8, 1);
 									lcd.print("   ");
 								}
+
+								if (bit_seted(road_signals, BIP_SIGNAL)) {
+									lcd.setCursor(9, 1);
+									lcd.print(" ");
+									noTone(BIP);
+								}
 								break;
 			}
 			delay(1);
-		}
-
-		if (bit_seted(turn_signals, BIP_SIGNAL)) {
-			lcd.setCursor(9, 1);
-			lcd.print(" ");
 		}
 
 		if (bit_seted(turn_signals, TURN_SIGNAL_ON)) {
@@ -973,9 +1125,14 @@ void road_mode() {	// Режим спидометра
 				set_bit(turn_signals, SECOND_ITERATION);
 			}
 		}
+
+		if (speed_now > 0.0)
+			zero_speed_delay++;	// Для обнуления скорости
 	}
 
+	noTone(BIP);
 	registerWrite(0);
+
 	while ((analogRead(ACTION_BUTTON) > 5) && (sys_watch()));	// Ожидание отжатия кнопки
 }
 
@@ -1369,19 +1526,21 @@ bool light_settings() {
 }
 
 void delay_w(int delay_num) {
-	for (int	delay_count	= 0; ((delay_count < delay_num) && (sys_watch())); delay_count++, delay(1));
+	if (system_mode == ALARM_MODE)
+		for (int	delay_count	= 0; ((delay_count < delay_num) && (sys_watch())); delay_count++);
+	else
+		for (int	delay_count	= 0; ((delay_count < delay_num) && (sys_watch())); delay_count++, delay(1));
 }
 
 void system_sleep() {
-	byte	count;
+	sys_watch();
 
 	registerWrite(0);
-	digitalWrite(HEADLIGHT, LOW);
-	digitalWrite(DISPLAY_LIGHT, LOW);
-	digitalWrite(LOWER_LIGHT, LOW);
-	digitalWrite(RED_BACK_LIGHT, LOW);
+	for (byte	i = 0; i != 13; digitalWrite(i, LOW), i++);
 
-	deep_sleep	= true;
+	security_byte	= 0;
+
+	set_bit(security_byte, DEEP_SLEEP);
 
 	while (true) {
 		while ((sys_watch()) && (system_mode == SLEEP_MODE)) {
@@ -1417,18 +1576,26 @@ void system_sleep() {
 		}
 
 		if (system_mode == SLEEP_MODE) {
-			deep_sleep	= false; // Выход из глубокого сна, чтобы можно было хоть что-нибудь ввести
+			unset_bit(security_byte, DEEP_SLEEP);	// Выход из глубокого сна, чтобы можно было хоть что-нибудь ввести
+			set_bit(security_byte, WAIT_INPUT);
+
+			sys_wait_delay	= 0;
 
 			while ((sys_watch()) && (analogRead(ACTION_BUTTON) > 5));
 
-			for (count	= 0; ((count < 3) && (!read_password())); count++);
 
-			if (count >= 3) {
+			if (!read_password()) {
 				set_bit(btc_config.system_byte, ALARM_STATE);
 				system_mode	= ALARM_MODE;
 				break;
 			} else {
-				break; 
+				tone(BIP, 3000, 200);
+				delay(250);
+				tone(BIP, 3000, 200);
+
+				unset_bit(security_byte, WAIT_INPUT);
+				sys_wait_delay	= 0;
+				break;
 			}
 		}
 	}
@@ -1436,5 +1603,117 @@ void system_sleep() {
 	if (system_mode	!= ALARM_MODE)
 		system_mode	= SPEED_MODE;
 
-	deep_sleep	= false;
+	security_byte	= 0;
+}
+
+void stopwatch() {
+	if (!stopwatch_run) {
+		stopwatch_hour	= 0;
+		stopwatch_min	= 0;
+		stopwatch_sec	= 0;
+
+		char stopwatch_menu[][15] = {
+			"Start",
+			"Back"
+		};
+
+		if (display_list(stopwatch_menu, 2) == 0) {
+			stopwatch_run	= true;
+			stopwatch_hour	= hour();
+			stopwatch_min	= minute();
+			stopwatch_sec	= second();
+		}
+	}
+
+	if (stopwatch_run) {
+		while ((system_mode == STOPWATCH_MODE) && (sys_watch())) {
+			char stopwatch_menu[][15] = {
+				"Stop",
+				"Speedometr",
+				"Back"
+			};
+
+			bool	pause	= false;
+
+			unsigned int	start_stopwatch_time = (unsigned int)((stopwatch_hour * 3600) + (stopwatch_min * 60) + stopwatch_sec),
+							now_stopwatch_time = 0;
+
+			float	now_hour_stopwatch,
+					now_min_stopwatch,
+					now_sec_stopwatch;
+
+			lcd.clear();
+			lcd.print("00:00:00");
+
+			while (key_pressed(false) != BUT_OK) {
+				now_stopwatch_time	= ((hour() * 3600.0) + (minute() * 60.0) + second()) - start_stopwatch_time;	
+				now_hour_stopwatch	= (now_stopwatch_time / 3600.0);
+				now_min_stopwatch	= (now_hour_stopwatch - (byte)now_hour_stopwatch) * 60.0;
+				now_sec_stopwatch	= (now_min_stopwatch - (byte)now_min_stopwatch) * 60.0;
+
+				lcd.setCursor(0, 0);
+
+				if (now_hour_stopwatch < 10) {
+					lcd.print("0");
+				}
+
+				lcd.print((byte)now_hour_stopwatch);
+				lcd.setCursor(3, 0);
+
+				if (now_min_stopwatch < 10) {
+					lcd.print("0");
+				}
+
+				lcd.print((byte)now_min_stopwatch);
+				lcd.setCursor(6, 0);
+				
+				if (now_sec_stopwatch < 10) {
+					lcd.print("0");
+				}
+
+				lcd.print((byte)now_sec_stopwatch);
+				delay_w(1000);
+			}
+
+			while (analogRead(ACTION_BUTTON) > 5);
+
+			switch (display_list(stopwatch_menu, 3)) {
+				case 0:	stopwatch_run	= false;
+						break;
+
+				case 1:	system_mode	= SPEED_MODE;
+
+				default:	break;
+			}
+		}
+	}
+}
+
+void alarm() {
+	lcd.clear();
+	while (!read_password());
+
+	noTone(BIP);
+	lcd.clear();
+	lcd.print("Unlocking...");
+
+	digitalWrite(LOWER_LIGHT, LOW);
+	digitalWrite(HEADLIGHT, LOW);
+	digitalWrite(RED_BACK_LIGHT, LOW);
+	registerWrite(0);
+
+	unset_bit(btc_config.system_byte, ALARM_STATE);
+	unset_bit(btc_config.system_byte, ALARM_WRITED);
+	digitalWrite(EXT_ALARM, HIGH);
+
+	sys_wait_delay	= 0;
+	security_byte	= 0;
+	system_mode		= SPEED_MODE;
+
+	WriteSysConfEEPROM(btc_config, 0);
+
+	delay(500);
+	tone(BIP, 3000, 200);
+	delay(250);
+	tone(BIP, 3000, 200);
 }
